@@ -36,7 +36,7 @@ const char topic[] = "ESP8266/blinds/in";
 String clientId = "ESP8266Blinds";
 // configs and config handler
 struct webConfig webConfig;
-ConfigHandler ConfigHandler(1);
+ConfigHandler configHandler;
 // variables used in configs handling
 bool restart = false;
 bool blindsConfigChanged = false;
@@ -57,34 +57,7 @@ bool stepperDisabled = false;
 
 AsyncWebServer serialServer(80);
 
-// main function used to change position of blinds to the desired position between 0-100%
-void move(int percent)
-{
-    double stepsNeeded = (percent * onePercentSteps) - blindsConfig.currentPosition;
-    int stepsInt = (int)stepsNeeded;
-    int expectedPosition = stepsInt + blindsConfig.currentPosition;
-    if (expectedPosition > blindsConfig.maxSteps) {
-        stepsInt = blindsConfig.maxSteps - blindsConfig.currentPosition;
-        expectedPosition = blindsConfig.maxSteps;
-    } else if (expectedPosition < 0) {
-        stepsInt = -1 * blindsConfig.currentPosition;
-        expectedPosition = 0;
-    }
-    if (stepsInt != 0) {
-        lastMillis = millis();
-        disableLastMillis = millis();
-        if (stepperDisabled == true) {
-            stepper.enable();
-            stepperDisabled = false;
-            delay(10);
-        }
-        stepper.move(stepsInt);
-        blindsConfig.currentPosition = expectedPosition;
-        blindsConfigChanged = true;
-    }
-}
-
-// used to move stepper motor by number of steps insted of desired percent state
+// moves stepper motor with given steps - negative means up, positive - down
 void moveSteps(int stepsToMove)
 {
     lastMillis = millis();
@@ -92,7 +65,7 @@ void moveSteps(int stepsToMove)
     if (stepperDisabled == true) {
         stepper.enable();
         stepperDisabled = false;
-        delay(10);
+        delay(50);
     }
     stepper.move(stepsToMove);
     blindsConfig.currentPosition += stepsToMove;
@@ -136,8 +109,8 @@ void handleMessage(String msg)
         manualMode = !manualMode;
     } else if (msg == "(save-now)") {
         WebSerial.println("Saving configs.");
-        ConfigHandler.saveBlindsConfig(blindsConfig);
-        ConfigHandler.saveWebConfig(webConfig);
+        configHandler.saveBlindsConfig(blindsConfig);
+        configHandler.saveWebConfig(webConfig);
     } else if (msg[0] == '+') {
         int steps = msg.substring(1).toInt();
         moveSteps(steps);
@@ -146,9 +119,19 @@ void handleMessage(String msg)
         moveSteps(steps);
     } else {
         int percent = msg.toInt();
-        if (percent >= 0 && percent <= 100) {
-            move(percent);
+        int stepsInt = 0;
+        if (percent == 0) {
+            stepsInt = -1 * blindsConfig.currentPosition;
+        } else if (percent == 100) {
+            stepsInt = blindsConfig.maxSteps - blindsConfig.currentPosition;
+        } else if (percent > 0 && percent < 100) {
+            double stepsNeeded = (percent * onePercentSteps) - blindsConfig.currentPosition;
+            int stepsInt = (int)stepsNeeded;
+        } else {
+            Serial.println("Wrong message");
+            return;
         }
+        moveSteps(stepsInt);
     }
 }
 
@@ -203,7 +186,7 @@ void reconnect()
     }
 }
 
-// sets and starts OTA
+// configures and starts OTA
 void setupOTA()
 {
     ArduinoOTA.onStart([]() {
@@ -314,13 +297,14 @@ void startAP()
         yield();
         if (restart) {
             LittleFS.end();
-            ConfigHandler.saveWebConfig(webConfig);
+            configHandler.saveWebConfig(webConfig);
             delay(3000);
             ESP.restart();
         }
     }
 }
 */
+
 // sets proper date and time, used to load certifices to connect to MQTT with secure connection
 void setDateTime()
 {
@@ -350,66 +334,67 @@ void recvMsg(uint8_t* data, size_t len)
 
 void setup()
 {
-    //  setting serial output
+    // setting serial output
     Serial.begin(115200);
     while (!Serial) {
         ;
     }
     delay(100);
     if (!LittleFS.begin()) {
-        // Serial.println(F("An Error has occurred while mounting LittleFS"));
+        Serial.println(F("An Error has occurred while mounting LittleFS"));
         return;
     }
     delay(100);
     //  read webConfig from memory
-    ConfigHandler.readWebConfig(webConfig);
+    configHandler.readWebConfig(webConfig);
     // try to connect to wifi
     if (!setupWIFI()) {
         // if cannot connect to WIFI setup AP to get new WiFi settings
         // startAP();
-    } else {
-        // set date and time
-        setDateTime();
-        // get certificates
-        int numCerts = certStore.initCertStore(LittleFS, PSTR("/certs.idx"), PSTR("/certs.ar"));
-        if (numCerts == 0) {
-            return; // Can't connect to anything w/o certs!
-        }
-        BearSSL::WiFiClientSecure* bear = new BearSSL::WiFiClientSecure();
-        bear->setCertStore(&certStore);
-        // create MQTT client and set it
-        client = new PubSubClient(*bear);
-        client->setServer(webConfig.mqttServer, webConfig.mqttPort);
-        client->setCallback(callback);
-        // setup OTA client
-        setupOTA();
-        WebSerial.begin(&serialServer);
-        WebSerial.msgCallback(recvMsg);
-        serialServer.begin();
-        // setting mode for button control
-        pinMode(RESET_BUTTON, INPUT_PULLUP);
-        pinMode(UPWARD_BUTTON, INPUT);
-        pinMode(DOWNWARD_BUTTON, INPUT);
-        // setting stepper properties
-        ConfigHandler.readBlindsConfig(blindsConfig);
-        onePercentSteps = blindsConfig.maxSteps / 100.00;
-        stepper.begin(45, 1);
-        stepper.setEnableActiveState(LOW);
-        stepper.disable();
-        stepperDisabled = true;
     }
+    // set date and time
+    setDateTime();
+    // get certificates
+    int numCerts = certStore.initCertStore(LittleFS, PSTR("/certs.idx"), PSTR("/certs.ar"));
+    if (numCerts == 0) {
+        return; // Can't connect to anything w/o certs!
+    }
+    BearSSL::WiFiClientSecure* bear = new BearSSL::WiFiClientSecure();
+    bear->setCertStore(&certStore);
+    // create MQTT client and set it
+    client = new PubSubClient(*bear);
+    client->setServer(webConfig.mqttServer, webConfig.mqttPort);
+    client->setCallback(callback);
+    // setup OTA client
+    setupOTA();
+    // TODO -- delete this later
+    WebSerial.begin(&serialServer);
+    WebSerial.msgCallback(recvMsg);
+    serialServer.begin();
+    //
+    // setting mode for button control
+    pinMode(RESET_BUTTON, INPUT_PULLUP);
+    pinMode(UPWARD_BUTTON, INPUT);
+    pinMode(DOWNWARD_BUTTON, INPUT);
+    // setting stepper properties
+    configHandler.readBlindsConfig(blindsConfig);
+    onePercentSteps = blindsConfig.maxSteps / 100.00;
+    stepper.begin(45, 1);
+    stepper.setEnableActiveState(LOW);
+    stepper.disable();
+    stepperDisabled = true;
 }
 
 void loop()
 {
-    // OTA handler
+    // OTA
     ArduinoOTA.handle();
     // manage MQTT connection
     if (!client->connected()) {
         reconnect();
     }
     client->loop();
-    // handle movement by buttons
+    // movement by buttons
     stepperCurrMillis = millis();
     if (stepperCurrMillis - stepperLastMillis > stepperInterval) {
         stepperLastMillis = stepperCurrMillis;
@@ -420,24 +405,26 @@ void loop()
     if (currentMillis - lastMillis > timeInterval) {
         lastMillis = currentMillis;
 
-        // parto for debugging only - delete later
+        // part for debugging only - delete later - TODO
         WebSerial.print("Max pos:");
         WebSerial.println(blindsConfig.maxSteps);
         WebSerial.print("Curr pos:");
         WebSerial.println(blindsConfig.currentPosition);
+        //
 
         if (blindsConfigChanged) {
-            ConfigHandler.saveBlindsConfig(blindsConfig);
+            configHandler.saveBlindsConfig(blindsConfig);
             blindsConfigChanged = false;
         }
     }
+    // disablind power to motor after move
     disableCurrMillis = millis();
     if ((disableCurrMillis - disableLastMillis > disableInterval) && stepperDisabled == false) {
         disableLastMillis = disableCurrMillis;
         stepper.disable();
         stepperDisabled = true;
     }
-    // check if reset button is pressed
+    // reset wifi configuration
     if (digitalRead(RESET_BUTTON) == HIGH) {
         // startAP();
     }
