@@ -1,9 +1,8 @@
-#include "configHandler.h"
+#include "ConfigHandler.h"
 #include <ArduinoJson.h> // JSON library
 #include <LittleFS.h>
-#include <cstring>
 
-ConfigHandler::ConfigHandler(int s) { }
+ConfigHandler::ConfigHandler(void) { }
 
 void ConfigHandler::readWebConfig(webConfig& config)
 {
@@ -13,7 +12,7 @@ void ConfigHandler::readWebConfig(webConfig& config)
         Serial.println(F("Failed to open file for reading"));
         return;
     }
-    StaticJsonDocument<384> doc;
+    StaticJsonDocument<480> doc;
     DeserializationError error = deserializeJson(doc, file);
     if (error) {
         Serial.print(F("deserializeJson() failed: "));
@@ -39,7 +38,7 @@ void ConfigHandler::saveWebConfig(webConfig& config)
         Serial.println(F("Failed to open file for reading"));
         exit(-1);
     }
-    StaticJsonDocument<384> doc;
+    StaticJsonDocument<480> doc;
     doc["ssid"] = config.ssid;
     doc["password"] = config.password;
     doc["mqttUsername"] = config.mqttUsername;

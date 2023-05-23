@@ -1,4 +1,5 @@
-// imports
+// TODO - przed oddaniem usunąć webSerial i odkomentować resetowanie, sprawdzić działanie resetowania, przesunąć trochę
+// kodu do innych plików (oddzielny kod do silnika, funkcje konfiguracji?)
 #include "configHandler.h" // used to read and write configs to memory
 #include <A4988.h> // stepper motor driver library
 #include <ArduinoOTA.h> // OTA library
@@ -12,7 +13,6 @@
 #include <WebSerial.h>
 #include <time.h>
 
-// defines
 // stepper motor
 #define MOTOR_STEPS 200
 #define STEP D1
@@ -22,7 +22,6 @@
 #define UPWARD_BUTTON D5
 #define DOWNWARD_BUTTON D6
 #define RESET_BUTTON D8
-// global variables
 // object used to run a stepper motor
 A4988 stepper(MOTOR_STEPS, DIR, STEP, DISABLE_POWER);
 // WiFi client and certStore
@@ -54,36 +53,87 @@ const long disableInterval = 2000; // 2 seconds
 long disableLastMillis = 0;
 long disableCurrMillis = 0;
 bool stepperDisabled = false;
-
 AsyncWebServer serialServer(80);
+
+void enableStepper()
+{
+    if (stepperDisabled == true) {
+        stepper.enable();
+        stepperDisabled = false;
+        delay(20);
+    }
+}
 
 // moves stepper motor with given steps - negative means up, positive - down
 void moveSteps(int stepsToMove)
 {
-    lastMillis = millis();
-    disableLastMillis = millis();
-    if (stepperDisabled == true) {
-        stepper.enable();
-        stepperDisabled = false;
-        delay(50);
-    }
+    enableStepper();
+
+    WebSerial.println(stepsToMove); // TODO - delete later
     stepper.move(stepsToMove);
     blindsConfig.currentPosition += stepsToMove;
     blindsConfigChanged = true;
+    lastMillis = millis();
+    disableLastMillis = millis();
 }
+/
 
-// reads the state of buttons and moves blinds according to buttons state
-void moveByButtons()
+    // reads the state of buttons and moves blinds according to buttons state
+    void moveByButtons()
 {
-    int upState = digitalRead(UPWARD_BUTTON);
-    int downState = digitalRead(DOWNWARD_BUTTON);
 
-    if (upState == HIGH && (manualMode || blindsConfig.currentPosition < blindsConfig.maxSteps)) {
-        double steps = (blindsConfig.maxSteps - blindsConfig.currentPosition) % 20 + 20;
-        moveSteps((int)steps);
-    } else if (downState == HIGH && (manualMode || blindsConfig.currentPosition > 0)) {
-        double steps = -1 * ((blindsConfig.currentPosition % 20) + 20);
-        moveSteps((int)steps);
+    if (digitalRead(DOWNWARD_BUTTON) == HIGH && (manualMode || blindsConfig.currentPosition > 0)) {
+        enableStepper();
+
+        digitalWrite(DIR, LOW);
+        delayMicroseconds(10);
+        int stepCounter = 0;
+
+        while (digitalRead(DOWNWARD_BUTTON) == HIGH && (manualMode || blindsConfig.currentPosition > 0)) {
+            digitalWrite(STEP, HIGH);
+            delayMicroseconds(2500);
+            digitalWrite(STEP, LOW);
+            delayMicroseconds(2500);
+
+            disableLastMillis = millis();
+            blindsConfig.currentPosition--;
+            yield();
+            stepCounter--;
+        }
+
+        blindsConfigChanged = true;
+        WebSerial.print("Moved ");
+        WebSerial.print(stepCounter);
+        WebSerial.println(" steps.");
+        // double steps = (blindsConfig.maxSteps - blindsConfig.currentPosition) % 20 + 20;
+        // moveSteps((int)steps);
+    } else if (digitalRead(UPWARD_BUTTON) == HIGH
+        && (manualMode || blindsConfig.currentPosition < blindsConfig.maxSteps)) {
+        enableStepper();
+
+        digitalWrite(DIR, HIGH);
+        delayMicroseconds(10);
+        int stepCounter = 0;
+
+        while (digitalRead(UPWARD_BUTTON) == HIGH
+            && (manualMode || blindsConfig.currentPosition < blindsConfig.maxSteps)) {
+            digitalWrite(STEP, HIGH);
+            delayMicroseconds(2500);
+            digitalWrite(STEP, LOW);
+            delayMicroseconds(2500);
+
+            disableLastMillis = millis();
+            blindsConfig.currentPosition++;
+            yield();
+            stepCounter++;
+        }
+
+        blindsConfigChanged = true;
+        WebSerial.print("Moved ");
+        WebSerial.print(stepCounter);
+        WebSerial.println(" steps.");
+        // double steps = -1 * ((blindsConfig.currentPosition % 20) + 20);
+        // moveSteps((int)steps);
     }
 }
 
@@ -119,6 +169,7 @@ void handleMessage(String msg)
         moveSteps(steps);
     } else {
         int percent = msg.toInt();
+        WebSerial.println(percent);
         int stepsInt = 0;
         if (percent == 0) {
             stepsInt = -1 * blindsConfig.currentPosition;
@@ -126,7 +177,7 @@ void handleMessage(String msg)
             stepsInt = blindsConfig.maxSteps - blindsConfig.currentPosition;
         } else if (percent > 0 && percent < 100) {
             double stepsNeeded = (percent * onePercentSteps) - blindsConfig.currentPosition;
-            int stepsInt = (int)stepsNeeded;
+            stepsInt = (int)stepsNeeded;
         } else {
             Serial.println("Wrong message");
             return;
@@ -376,12 +427,15 @@ void setup()
     pinMode(RESET_BUTTON, INPUT_PULLUP);
     pinMode(UPWARD_BUTTON, INPUT);
     pinMode(DOWNWARD_BUTTON, INPUT);
+    pinMode(STEP, OUTPUT);
+    pinMode(DIR, OUTPUT);
     // setting stepper properties
     configHandler.readBlindsConfig(blindsConfig);
     onePercentSteps = blindsConfig.maxSteps / 100.00;
     stepper.begin(45, 1);
     stepper.setEnableActiveState(LOW);
     stepper.disable();
+    // digitalWrite(DISABLE_POWER, HIGH);
     stepperDisabled = true;
 }
 
@@ -395,9 +449,7 @@ void loop()
     }
     client->loop();
     // movement by buttons
-    stepperCurrMillis = millis();
-    if (stepperCurrMillis - stepperLastMillis > stepperInterval) {
-        stepperLastMillis = stepperCurrMillis;
+    if (stepper.getStepsRemaining() == 0) {
         moveByButtons();
     }
     // saving blinds position if enough time has passed and position has changed
@@ -417,15 +469,17 @@ void loop()
             blindsConfigChanged = false;
         }
     }
-    // disablind power to motor after move
+    // disable power to motor after move
     disableCurrMillis = millis();
     if ((disableCurrMillis - disableLastMillis > disableInterval) && stepperDisabled == false) {
         disableLastMillis = disableCurrMillis;
+        // stepper.move(-1);
         stepper.disable();
         stepperDisabled = true;
     }
     // reset wifi configuration
     if (digitalRead(RESET_BUTTON) == HIGH) {
+        // uncomment later and test - TODO
         // startAP();
     }
 }

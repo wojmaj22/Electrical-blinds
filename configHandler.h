@@ -6,7 +6,7 @@ struct webConfig {
     char password[24];
     char mqttUsername[24];
     char mqttPassword[24];
-    char mqttServer[24];
+    char mqttServer[72];
     int mqttPort;
     char otaPassword[24];
 };
@@ -18,7 +18,7 @@ struct blindsConfig {
 
 class ConfigHandler {
 public:
-    ConfigHandler(int s);
+    ConfigHandler(void);
     void readWebConfig(webConfig& config);
     void saveWebConfig(webConfig& config);
     void readBlindsConfig(blindsConfig& config);
