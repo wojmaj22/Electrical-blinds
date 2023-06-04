@@ -1,18 +1,19 @@
-// TODO - przed oddaniem usunąć webSerial i odkomentować resetowanie, sprawdzić działanie resetowania, przesunąć trochę
-// kodu do innych plików (oddzielny kod do silnika, funkcje konfiguracji?)
+// TODO - po testach usunąć WebSerial, 
 #include "configHandler.h" // used to read and write configs to memory
-#include <A4988.h> // stepper motor driver library
+#include "stepperDriver.h"
 #include <ArduinoOTA.h> // OTA library
-#include <CertStoreBearSSL.h>
+#include <CertStoreBearSSL.h> // read certs and use them
 #include <ESP8266WiFi.h> // WiFi library
 #include <ESPAsyncTCP.h> // library for AsyncWebServer
 #include <ESPAsyncWebServer.h> // WiFi server library
 #include <LittleFS.h> // File system library
 #include <PubSubClient.h> // MQTT library
 #include <TZ.h>
-#include <WebSerial.h>
+#include <WebSerial.h> // TODO - delete later, only for debugging
+#include <ezButton.h> // for debouncing buttons
 #include <time.h>
 
+#define SPIFFS LittleFS
 // stepper motor
 #define MOTOR_STEPS 200
 #define STEP D1
@@ -23,7 +24,7 @@
 #define DOWNWARD_BUTTON D6
 #define RESET_BUTTON D8
 // object used to run a stepper motor
-A4988 stepper(MOTOR_STEPS, DIR, STEP, DISABLE_POWER);
+StepperDriver stepperDriver(STEP, DIR, DISABLE_POWER);
 // WiFi client and certStore
 WiFiClientSecure espClient;
 BearSSL::CertStore certStore;
@@ -33,111 +34,24 @@ PubSubClient* client;
 const char topic[] = "ESP8266/blinds/in";
 // MQTT cliend ID
 String clientId = "ESP8266Blinds";
-// configs and config handler
+// configs and configs handler
 struct webConfig webConfig;
-ConfigHandler configHandler;
-// variables used in configs handling
-bool restart = false;
-bool blindsConfigChanged = false;
 struct blindsConfig blindsConfig;
+ConfigHandler configHandler;
+// 
+bool restart = false;
 bool manualMode = false;
-double onePercentSteps;
-// used to count currentMillis
+// delete below after deleting webserial - TODO
 long lastMillis = 0;
 long currentMillis = 0;
 const long timeInterval = 30000; // 30 seconds
-long stepperLastMillis = 0;
-long stepperCurrMillis = 0;
-const long stepperInterval = 130; // 130 ms
-const long disableInterval = 2000; // 2 seconds
-long disableLastMillis = 0;
-long disableCurrMillis = 0;
-bool stepperDisabled = false;
+// WebServer for WebSerial debugging - delete later TODO
 AsyncWebServer serialServer(80);
+// buttons and debouncing
+ezButton buttonUp(UPWARD_BUTTON, INPUT);
+ezButton buttonDown(DOWNWARD_BUTTON, INPUT);
 
-void enableStepper()
-{
-    if (stepperDisabled == true) {
-        stepper.enable();
-        stepperDisabled = false;
-        delay(20);
-    }
-}
-
-// moves stepper motor with given steps - negative means up, positive - down
-void moveSteps(int stepsToMove)
-{
-    enableStepper();
-
-    WebSerial.println(stepsToMove); // TODO - delete later
-    stepper.move(stepsToMove);
-    blindsConfig.currentPosition += stepsToMove;
-    blindsConfigChanged = true;
-    lastMillis = millis();
-    disableLastMillis = millis();
-}
-/
-
-    // reads the state of buttons and moves blinds according to buttons state
-    void moveByButtons()
-{
-
-    if (digitalRead(DOWNWARD_BUTTON) == HIGH && (manualMode || blindsConfig.currentPosition > 0)) {
-        enableStepper();
-
-        digitalWrite(DIR, LOW);
-        delayMicroseconds(10);
-        int stepCounter = 0;
-
-        while (digitalRead(DOWNWARD_BUTTON) == HIGH && (manualMode || blindsConfig.currentPosition > 0)) {
-            digitalWrite(STEP, HIGH);
-            delayMicroseconds(2500);
-            digitalWrite(STEP, LOW);
-            delayMicroseconds(2500);
-
-            disableLastMillis = millis();
-            blindsConfig.currentPosition--;
-            yield();
-            stepCounter--;
-        }
-
-        blindsConfigChanged = true;
-        WebSerial.print("Moved ");
-        WebSerial.print(stepCounter);
-        WebSerial.println(" steps.");
-        // double steps = (blindsConfig.maxSteps - blindsConfig.currentPosition) % 20 + 20;
-        // moveSteps((int)steps);
-    } else if (digitalRead(UPWARD_BUTTON) == HIGH
-        && (manualMode || blindsConfig.currentPosition < blindsConfig.maxSteps)) {
-        enableStepper();
-
-        digitalWrite(DIR, HIGH);
-        delayMicroseconds(10);
-        int stepCounter = 0;
-
-        while (digitalRead(UPWARD_BUTTON) == HIGH
-            && (manualMode || blindsConfig.currentPosition < blindsConfig.maxSteps)) {
-            digitalWrite(STEP, HIGH);
-            delayMicroseconds(2500);
-            digitalWrite(STEP, LOW);
-            delayMicroseconds(2500);
-
-            disableLastMillis = millis();
-            blindsConfig.currentPosition++;
-            yield();
-            stepCounter++;
-        }
-
-        blindsConfigChanged = true;
-        WebSerial.print("Moved ");
-        WebSerial.print(stepCounter);
-        WebSerial.println(" steps.");
-        // double steps = -1 * ((blindsConfig.currentPosition % 20) + 20);
-        // moveSteps((int)steps);
-    }
-}
-
-// check the message and do what it says
+// check the message from MQTT broker and do what it says
 void handleMessage(String msg)
 {
     Serial.println(msg);
@@ -148,12 +62,11 @@ void handleMessage(String msg)
     } else if (msg == "(set-zero)") {
         WebSerial.println("Setting 0 position");
         blindsConfig.currentPosition = 0;
-        blindsConfigChanged = true;
+        configHandler.saveBlindsConfig(blindsConfig);
     } else if (msg == "(set-max)") {
         WebSerial.println("Setting max position");
         blindsConfig.maxSteps = blindsConfig.currentPosition;
-        onePercentSteps = blindsConfig.maxSteps / 100.00;
-        blindsConfigChanged = true;
+        configHandler.saveBlindsConfig(blindsConfig);
     } else if (msg == "(manual)") {
         WebSerial.println("Manual");
         manualMode = !manualMode;
@@ -163,39 +76,29 @@ void handleMessage(String msg)
         configHandler.saveWebConfig(webConfig);
     } else if (msg[0] == '+') {
         int steps = msg.substring(1).toInt();
-        moveSteps(steps);
+        Serial.println(steps);
+        stepperDriver.moveSteps(steps);
     } else if (msg[0] == '-') {
         int steps = -1 * msg.substring(1).toInt();
-        moveSteps(steps);
+        Serial.println(steps);
+        stepperDriver.moveSteps(steps);
     } else {
         int percent = msg.toInt();
-        WebSerial.println(percent);
-        int stepsInt = 0;
-        if (percent == 0) {
-            stepsInt = -1 * blindsConfig.currentPosition;
-        } else if (percent == 100) {
-            stepsInt = blindsConfig.maxSteps - blindsConfig.currentPosition;
-        } else if (percent > 0 && percent < 100) {
-            double stepsNeeded = (percent * onePercentSteps) - blindsConfig.currentPosition;
-            stepsInt = (int)stepsNeeded;
-        } else {
-            Serial.println("Wrong message");
-            return;
-        }
-        moveSteps(stepsInt);
+        Serial.println(percent);
+        stepperDriver.movePercent(percent);
     }
 }
 
 // process messages incoming from MQTT into String format
 void callback(char* topic, byte* payload, unsigned int length)
 {
-    WebSerial.print("Message on topic ");
-    WebSerial.println(topic);
+    Serial.print("Message on topic ");
+    Serial.println(topic);
     String msg = "";
     for (int i = 0; i < length; i++) {
         msg += String((char)payload[i]);
     }
-    // Serial.printf("%s \n", msg);
+    Serial.printf("%s \n", msg);
     handleMessage(msg.c_str());
 }
 
@@ -221,7 +124,7 @@ bool setupWIFI()
     return true;
 }
 
-// manages MQTT broker connection
+// manages MQTT broker connection and reconnection
 void reconnect()
 {
     while (!client->connected()) {
@@ -373,6 +276,7 @@ void setDateTime()
     Serial.printf("%s %s", tzname[0], asctime(&timeinfo));
 }
 
+// delete when removing WebSerial - TODO
 void recvMsg(uint8_t* data, size_t len)
 {
     WebSerial.println("Received Data...");
@@ -400,7 +304,7 @@ void setup()
     configHandler.readWebConfig(webConfig);
     // try to connect to wifi
     if (!setupWIFI()) {
-        // if cannot connect to WIFI setup AP to get new WiFi settings
+        // if cannot connect to WIFI setup AP to get new WiFi settings - TODO uncomment later
         // startAP();
     }
     // set date and time
@@ -408,6 +312,7 @@ void setup()
     // get certificates
     int numCerts = certStore.initCertStore(LittleFS, PSTR("/certs.idx"), PSTR("/certs.ar"));
     if (numCerts == 0) {
+        Serial.println("Error while loading certs!");
         return; // Can't connect to anything w/o certs!
     }
     BearSSL::WiFiClientSecure* bear = new BearSSL::WiFiClientSecure();
@@ -416,27 +321,20 @@ void setup()
     client = new PubSubClient(*bear);
     client->setServer(webConfig.mqttServer, webConfig.mqttPort);
     client->setCallback(callback);
+    client->setKeepAlive(60);
+    client->setSocketTimeout(60);
     // setup OTA client
     setupOTA();
-    // TODO -- delete this later
+    // TODO -- delete this later, debugging only
     WebSerial.begin(&serialServer);
     WebSerial.msgCallback(recvMsg);
     serialServer.begin();
-    //
-    // setting mode for button control
+    // setting reset pin
     pinMode(RESET_BUTTON, INPUT_PULLUP);
-    pinMode(UPWARD_BUTTON, INPUT);
-    pinMode(DOWNWARD_BUTTON, INPUT);
-    pinMode(STEP, OUTPUT);
-    pinMode(DIR, OUTPUT);
     // setting stepper properties
-    configHandler.readBlindsConfig(blindsConfig);
-    onePercentSteps = blindsConfig.maxSteps / 100.00;
-    stepper.begin(45, 1);
-    stepper.setEnableActiveState(LOW);
-    stepper.disable();
-    // digitalWrite(DISABLE_POWER, HIGH);
-    stepperDisabled = true;
+    configHandler.readBlindsConfig(blindsConfig)   ;
+    stepperDriver.begin(50, &configHandler, &blindsConfig);
+    stepperDriver.setButtons(&buttonUp, &buttonDown);
 }
 
 void loop()
@@ -449,37 +347,27 @@ void loop()
     }
     client->loop();
     // movement by buttons
-    if (stepper.getStepsRemaining() == 0) {
-        moveByButtons();
+    buttonUp.loop();
+    buttonDown.loop();
+    int count = stepperDriver.moveButtons(manualMode);
+    
+    if( count != 0){
+    WebSerial.print("Moved ");
+    WebSerial.print(count);
+    WebSerial.println(" steps with buttons");
     }
-    // saving blinds position if enough time has passed and position has changed
+    // TODO - delete if and all WebSerial
     currentMillis = millis();
     if (currentMillis - lastMillis > timeInterval) {
         lastMillis = currentMillis;
-
-        // part for debugging only - delete later - TODO
         WebSerial.print("Max pos:");
         WebSerial.println(blindsConfig.maxSteps);
         WebSerial.print("Curr pos:");
         WebSerial.println(blindsConfig.currentPosition);
-        //
-
-        if (blindsConfigChanged) {
-            configHandler.saveBlindsConfig(blindsConfig);
-            blindsConfigChanged = false;
-        }
     }
-    // disable power to motor after move
-    disableCurrMillis = millis();
-    if ((disableCurrMillis - disableLastMillis > disableInterval) && stepperDisabled == false) {
-        disableLastMillis = disableCurrMillis;
-        // stepper.move(-1);
-        stepper.disable();
-        stepperDisabled = true;
-    }
-    // reset wifi configuration
+   
+    // reset wifi configuration, TODO - test this afer deleting WebSerial
     if (digitalRead(RESET_BUTTON) == HIGH) {
-        // uncomment later and test - TODO
         // startAP();
     }
 }
