@@ -1,4 +1,4 @@
-// TODO - po testach usunąć WebSerial, 
+// includes
 #include "configHandler.h" // used to read and write configs to memory
 #include "stepperDriver.h"
 #include <ArduinoOTA.h> // OTA library
@@ -13,7 +13,6 @@
 #include <ezButton.h> // for debouncing buttons
 #include <time.h>
 
-#define SPIFFS LittleFS
 // stepper motor
 #define MOTOR_STEPS 200
 #define STEP D1
@@ -38,40 +37,116 @@ String clientId = "ESP8266Blinds";
 struct webConfig webConfig;
 struct blindsConfig blindsConfig;
 ConfigHandler configHandler;
-// 
+//
 bool restart = false;
 bool manualMode = false;
 // delete below after deleting webserial - TODO
 long lastMillis = 0;
 long currentMillis = 0;
 const long timeInterval = 30000; // 30 seconds
-// WebServer for WebSerial debugging - delete later TODO
-AsyncWebServer serialServer(80);
 // buttons and debouncing
 ezButton buttonUp(UPWARD_BUTTON, INPUT);
 ezButton buttonDown(DOWNWARD_BUTTON, INPUT);
 
+// function used to set new web settings, starts AP and a simple website
+void startAP()
+{
+    AsyncWebServer server(80);
+    Serial.println("Setting Access Point");
+    WiFi.softAP("ESP8266 - roleta", "12345678");
+
+    IPAddress IP = WiFi.softAPIP();
+    Serial.print("AP IP address: ");
+    Serial.println(IP);
+
+    server.on(
+        "/", HTTP_GET, [](AsyncWebServerRequest* request) { request->send(LittleFS, "/index.html", "text/html"); });
+
+    server.on("/style.css", HTTP_GET,
+        [](AsyncWebServerRequest* request) { request->send(LittleFS, "/style.css", "test/css"); });
+
+    server.on("/", HTTP_POST, [](AsyncWebServerRequest* request) {
+        int params = request->params();
+        for (int i = 0; i < params; i++) {
+            AsyncWebParameter* p = request->getParam(i);
+            if (p->isPost()) {
+                if (p->name() == "ssid") {
+                    strlcpy(webConfig.ssid, p->value().c_str(), 24);
+                    // Serial.print("SSID set to: ");
+                    // Serial.println(webConfig.ssid);
+                }
+                if (p->name() == "password") {
+                    strlcpy(webConfig.password, p->value().c_str(), 24);
+                    // Serial.print("Password set to: ");
+                    // Serial.println(webConfig.password);
+                }
+                if (p->name() == "mqttUsername") {
+                    strlcpy(webConfig.mqttUsername, p->value().c_str(), 24);
+                    // Serial.print("IP Address set to: ");
+                    // Serial.println(webConfig.mqttUsername);
+                }
+                if (p->name() == "mqttPassword") {
+                    strlcpy(webConfig.mqttPassword, p->value().c_str(), 24);
+                    // Serial.print("Gateway set to: ");
+                    // Serial.println(webConfig.mqttPassword);
+                }
+                if (p->name() == "mqttServer") {
+                    strlcpy(webConfig.mqttServer, p->value().c_str(), 24);
+                    // Serial.print("Gateway set to: ");
+                    // Serial.println(webConfig.mqttServer);
+                }
+                if (p->name() == "otaPassword") {
+                    strlcpy(webConfig.otaPassword, p->value().c_str(), 24);
+                    // Serial.print("Gateway set to: ");
+                    // Serial.println(webConfig.otaPassword);
+                }
+                if (p->name() == "mqttPort") {
+                    webConfig.mqttPort = p->value().toInt();
+                    // Serial.print("Gateway set to: ");
+                    // Serial.println(webConfig.mqttPort);
+                }
+                //.printf("POST[%s]: %s\n", p->name().c_str(), p->value().c_str());
+            }
+        }
+        restart = true;
+        // Serial.println("Restarting");
+        request->send(200, "text/plain", "Done. ESP will restart.");
+    });
+
+    server.begin();
+
+    while (1) {
+        yield();
+        if (restart) {
+            LittleFS.end();
+            configHandler.saveWebConfig(webConfig);
+            configHandler.saveBlindsConfig(blindsConfig);
+            delay(3000);
+            ESP.restart();
+        }
+    }
+}
+
 // check the message from MQTT broker and do what it says
 void handleMessage(String msg)
 {
-    Serial.println(msg);
     if (msg == "(reset)") {
-        WebSerial.println("Reseting WiFi and MQTT data");
-        // startAP();
+        Serial.println("Reseting WiFi and MQTT data");
+        startAP();
         return;
     } else if (msg == "(set-zero)") {
-        WebSerial.println("Setting 0 position");
+        Serial.println("Setting 0 position");
         blindsConfig.currentPosition = 0;
         configHandler.saveBlindsConfig(blindsConfig);
     } else if (msg == "(set-max)") {
-        WebSerial.println("Setting max position");
+        Serial.println("Setting max position");
         blindsConfig.maxSteps = blindsConfig.currentPosition;
         configHandler.saveBlindsConfig(blindsConfig);
     } else if (msg == "(manual)") {
-        WebSerial.println("Manual");
+        Serial.println("Manual");
         manualMode = !manualMode;
     } else if (msg == "(save-now)") {
-        WebSerial.println("Saving configs.");
+        Serial.println("Saving configs.");
         configHandler.saveBlindsConfig(blindsConfig);
         configHandler.saveWebConfig(webConfig);
     } else if (msg[0] == '+') {
@@ -151,113 +226,33 @@ void setupOTA()
         } else {
             type = "filesystem";
         }
-        // Serial.println("Start updating " + type);
+        Serial.println("Start updating " + type);
     });
     ArduinoOTA.onEnd([]() {
-        WebSerial.print("\nEnd of update, restarting now.\n");
+        Serial.print("\nEnd of update, restarting now.\n");
         delay(2000);
         ESP.restart();
     });
     ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
-        // Serial.printf("Progress: %u%%\n", (progress / (total / 100)));
+        Serial.printf("Progress: %u%%\n", (progress / (total / 100)));
     });
     ArduinoOTA.onError([](ota_error_t error) {
-        // Serial.printf("Error[%u]: ", error);
+        Serial.printf("Error[%u]: ", error);
         if (error == OTA_AUTH_ERROR) {
-            // Serial.println("Auth Failed");
+            Serial.println("Auth Failed");
         } else if (error == OTA_BEGIN_ERROR) {
-            // Serial.println("Begin Failed");
+            Serial.println("Begin Failed");
         } else if (error == OTA_CONNECT_ERROR) {
-            // Serial.println("Connect Failed");
+            Serial.println("Connect Failed");
         } else if (error == OTA_RECEIVE_ERROR) {
-            // Serial.println("Receive Failed");
+            Serial.println("Receive Failed");
         } else if (error == OTA_END_ERROR) {
-            // Serial.println("End Failed");
+            Serial.println("End Failed");
         }
     });
     ArduinoOTA.setPassword((const char*)webConfig.otaPassword);
     ArduinoOTA.begin();
 }
-
-// function used to set new web settings, starts AP and a simple website
-/*
-void startAP()
-{
-    AsyncWebServer server(80);
-    Serial.println("Setting Access Point");
-    WiFi.softAP("ESP8266 - roleta", "12345678");
-
-    IPAddress IP = WiFi.softAPIP();
-    Serial.print("AP IP address: ");
-    Serial.println(IP);
-
-    server.on(
-        "/", HTTP_GET, [](AsyncWebServerRequest* request) { request->send(LittleFS, "/index.html", "text/html"); });
-
-    server.on("/style.css", HTTP_GET,
-        [](AsyncWebServerRequest* request) { request->send(LittleFS, "/style.css", "test/css"); });
-
-    server.on("/", HTTP_POST, [](AsyncWebServerRequest* request) {
-        int params = request->params();
-        for (int i = 0; i < params; i++) {
-            AsyncWebParameter* p = request->getParam(i);
-            if (p->isPost()) {
-                if (p->name() == "ssid") {
-                    strlcpy(webConfig.ssid, p->value().c_str(), 24);
-                    // Serial.print("SSID set to: ");
-                    // Serial.println(webConfig.ssid);
-                }
-                if (p->name() == "password") {
-                    strlcpy(webConfig.password, p->value().c_str(), 24);
-                    // Serial.print("Password set to: ");
-                    // Serial.println(webConfig.password);
-                }
-                if (p->name() == "mqttUsername") {
-                    strlcpy(webConfig.mqttUsername, p->value().c_str(), 24);
-                    // Serial.print("IP Address set to: ");
-                    // Serial.println(webConfig.mqttUsername);
-                }
-                if (p->name() == "mqttPassword") {
-                    strlcpy(webConfig.mqttPassword, p->value().c_str(), 24);
-                    // Serial.print("Gateway set to: ");
-                    // Serial.println(webConfig.mqttPassword);
-                }
-                if (p->name() == "mqttServer") {
-                    strlcpy(webConfig.mqttServer, p->value().c_str(), 24);
-                    // Serial.print("Gateway set to: ");
-                    // Serial.println(webConfig.mqttServer);
-                }
-                if (p->name() == "otaPassword") {
-                    strlcpy(webConfig.otaPassword, p->value().c_str(), 24);
-                    // Serial.print("Gateway set to: ");
-                    // Serial.println(webConfig.otaPassword);
-                }
-                if (p->name() == "mqttPort") {
-                    webConfig.mqttPort = p->value().toInt();
-                    // Serial.print("Gateway set to: ");
-                    // Serial.println(webConfig.mqttPort);
-                }
-                //.printf("POST[%s]: %s\n", p->name().c_str(), p->value().c_str());
-            }
-        }
-        restart = true;
-        // Serial.println("Restarting");
-        request->send(200, "text/plain", "Done. ESP will restart.");
-    });
-
-    server.begin();
-
-    while (1) {
-        yield();
-        if (restart) {
-            LittleFS.end();
-            configHandler.saveWebConfig(webConfig);
-            delay(3000);
-            ESP.restart();
-        }
-    }
-}
-*/
 
 // sets proper date and time, used to load certifices to connect to MQTT with secure connection
 void setDateTime()
@@ -274,17 +269,6 @@ void setDateTime()
     struct tm timeinfo;
     gmtime_r(&now, &timeinfo);
     Serial.printf("%s %s", tzname[0], asctime(&timeinfo));
-}
-
-// delete when removing WebSerial - TODO
-void recvMsg(uint8_t* data, size_t len)
-{
-    WebSerial.println("Received Data...");
-    String d = "";
-    for (int i = 0; i < len; i++) {
-        d += char(data[i]);
-    }
-    WebSerial.println(d);
 }
 
 void setup()
@@ -304,12 +288,12 @@ void setup()
     configHandler.readWebConfig(webConfig);
     // try to connect to wifi
     if (!setupWIFI()) {
-        // if cannot connect to WIFI setup AP to get new WiFi settings - TODO uncomment later
-        // startAP();
+        // if cannot connect to WIFI setup AP to get new WiFi settings
+        startAP();
     }
     // set date and time
     setDateTime();
-    // get certificates
+    // get certificates for MQTT connection
     int numCerts = certStore.initCertStore(LittleFS, PSTR("/certs.idx"), PSTR("/certs.ar"));
     if (numCerts == 0) {
         Serial.println("Error while loading certs!");
@@ -323,23 +307,19 @@ void setup()
     client->setCallback(callback);
     client->setKeepAlive(60);
     client->setSocketTimeout(60);
-    // setup OTA client
+    // setup OTA client - for updates
     setupOTA();
-    // TODO -- delete this later, debugging only
-    WebSerial.begin(&serialServer);
-    WebSerial.msgCallback(recvMsg);
-    serialServer.begin();
     // setting reset pin
     pinMode(RESET_BUTTON, INPUT_PULLUP);
-    // setting stepper properties
-    configHandler.readBlindsConfig(blindsConfig)   ;
+    // setting stepper motor properties
+    configHandler.readBlindsConfig(blindsConfig);
     stepperDriver.begin(50, &configHandler, &blindsConfig);
     stepperDriver.setButtons(&buttonUp, &buttonDown);
 }
 
 void loop()
 {
-    // OTA
+    // handle OTA
     ArduinoOTA.handle();
     // manage MQTT connection
     if (!client->connected()) {
@@ -349,25 +329,10 @@ void loop()
     // movement by buttons
     buttonUp.loop();
     buttonDown.loop();
-    int count = stepperDriver.moveButtons(manualMode);
-    
-    if( count != 0){
-    WebSerial.print("Moved ");
-    WebSerial.print(count);
-    WebSerial.println(" steps with buttons");
-    }
-    // TODO - delete if and all WebSerial
-    currentMillis = millis();
-    if (currentMillis - lastMillis > timeInterval) {
-        lastMillis = currentMillis;
-        WebSerial.print("Max pos:");
-        WebSerial.println(blindsConfig.maxSteps);
-        WebSerial.print("Curr pos:");
-        WebSerial.println(blindsConfig.currentPosition);
-    }
-   
-    // reset wifi configuration, TODO - test this afer deleting WebSerial
+    stepperDriver.moveButtons(manualMode);
+
+    // reset wifi configuration when reset button is pressed
     if (digitalRead(RESET_BUTTON) == HIGH) {
-        // startAP();
+        startAP();
     }
 }

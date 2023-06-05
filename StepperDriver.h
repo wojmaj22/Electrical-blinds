@@ -7,19 +7,21 @@
 
 class StepperDriver {
 public:
+    // consctructor
     StepperDriver(short step, short dir, short enable);
-
+    // methods for setting properties
     void begin(float rpm, ConfigHandler* configH, struct blindsConfig* config);
     void setButtons(ezButton* up, ezButton* down);
-
+    // methods for moving motor in a desired way
     void movePercent(int percent);
     void moveSteps(long steps);
-    int moveButtons(boolean manualMode);
-
+    void moveButtons(boolean manualMode);
+    // control enablind/disabling of motor
     void enable(void);
     void disable(void);
 
 private:
+    // some field needed for work
     short stepPin;
     short dirPin;
     short enablePin;
@@ -32,8 +34,8 @@ private:
     ConfigHandler* configHandler;
     ezButton* upButton;
     ezButton* downButton;
-    struct blindsConfig *blindsConfig;
-
+    struct blindsConfig* blindsConfig;
+    // basic method for moving one step
     void oneStep();
 };
 
