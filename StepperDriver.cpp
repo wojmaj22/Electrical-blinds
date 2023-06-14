@@ -72,6 +72,9 @@ void StepperDriver::moveSteps(long steps)
         oneStep();
     }
     blindsConfig->currentPosition += steps;
+    digitalWrite(dirPin, LOW);
+    oneStep();
+    oneStep();
     StepperDriver::disable();
     configHandler->saveBlindsConfig(*blindsConfig);
 }
@@ -93,6 +96,9 @@ void StepperDriver::moveButtons(boolean manualMode)
             blindsConfig->currentPosition++;
             downButton->loop();
         }
+        digitalWrite(dirPin, LOW);
+        oneStep();
+        oneStep();
         StepperDriver::disable();
         configHandler->saveBlindsConfig(*blindsConfig);
 
@@ -106,6 +112,9 @@ void StepperDriver::moveButtons(boolean manualMode)
             blindsConfig->currentPosition--;
             upButton->loop();
         }
+        digitalWrite(dirPin, LOW);
+        oneStep();
+        oneStep();
         StepperDriver::disable();
         configHandler->saveBlindsConfig(*blindsConfig);
     }

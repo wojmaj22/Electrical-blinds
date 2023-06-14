@@ -21,7 +21,7 @@
 // buttons
 #define UPWARD_BUTTON D5
 #define DOWNWARD_BUTTON D6
-#define RESET_BUTTON D8
+#define RESET_BUTTON D3
 // object used to run a stepper motor
 StepperDriver stepperDriver(STEP, DIR, DISABLE_POWER);
 // WiFi client and certStore
@@ -91,7 +91,7 @@ void startAP()
                     // Serial.println(webConfig.mqttPassword);
                 }
                 if (p->name() == "mqttServer") {
-                    strlcpy(webConfig.mqttServer, p->value().c_str(), 24);
+                    strlcpy(webConfig.mqttServer, p->value().c_str(), 72);
                     // Serial.print("Gateway set to: ");
                     // Serial.println(webConfig.mqttServer);
                 }
@@ -108,7 +108,10 @@ void startAP()
                 //.printf("POST[%s]: %s\n", p->name().c_str(), p->value().c_str());
             }
         }
+        configHandler.saveWebConfig(webConfig);
+        configHandler.saveBlindsConfig(blindsConfig);
         restart = true;
+        delay(1000);
         // Serial.println("Restarting");
         request->send(200, "text/plain", "Done. ESP will restart.");
     });
@@ -119,9 +122,7 @@ void startAP()
         yield();
         if (restart) {
             LittleFS.end();
-            configHandler.saveWebConfig(webConfig);
-            configHandler.saveBlindsConfig(blindsConfig);
-            delay(3000);
+            delay(1000);
             ESP.restart();
         }
     }
@@ -178,7 +179,7 @@ void callback(char* topic, byte* payload, unsigned int length)
 }
 
 // connects to WiFi network, if fails returns false else true
-bool setupWIFI()
+void setupWIFI()
 {
     delay(10);
     Serial.println("Connecting to WiFi.");
@@ -190,13 +191,12 @@ bool setupWIFI()
         yield();
         if (millis() - currentTime > maxTime) {
             Serial.println("Cannot connect to wifi.");
-            return false;
+            startAP();
         }
     }
     randomSeed(micros());
     Serial.printf("Connected to: %s at IP: ", webConfig.ssid);
     Serial.println(WiFi.localIP());
-    return true;
 }
 
 // manages MQTT broker connection and reconnection
@@ -287,10 +287,7 @@ void setup()
     //  read webConfig from memory
     configHandler.readWebConfig(webConfig);
     // try to connect to wifi
-    if (!setupWIFI()) {
-        // if cannot connect to WIFI setup AP to get new WiFi settings
-        startAP();
-    }
+    setupWIFI();
     // set date and time
     setDateTime();
     // get certificates for MQTT connection
@@ -330,9 +327,9 @@ void loop()
     buttonUp.loop();
     buttonDown.loop();
     stepperDriver.moveButtons(manualMode);
-
     // reset wifi configuration when reset button is pressed
-    if (digitalRead(RESET_BUTTON) == HIGH) {
+    if (digitalRead(RESET_BUTTON) == LOW) {
+        Serial.println("Reseting web config with button.");
         startAP();
     }
 }
